@@ -1,7 +1,9 @@
 """Configuration management service for persistent config storage."""
 
 import json
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Optional
 
 from backend.models.config import Config
@@ -29,14 +31,13 @@ class ConfigManager:
         Returns:
             Config object. Returns default empty config if file doesn't exist.
         """
-        if not self.config_path.exists():
-            return Config()
-
         try:
-            with open(self.config_path) as f:
+            with self.config_path.open(encoding="utf-8") as f:
                 data = json.load(f)
-            return Config(**data)
-        except (json.JSONDecodeError, ValueError) as e:
+            return Config.model_validate(data)
+        except FileNotFoundError:
+            return Config()
+        except ValueError as e:
             print(f"Warning: Failed to load config from {self.config_path}: {e}")
             return Config()
 
@@ -46,8 +47,23 @@ class ConfigManager:
         Args:
             config: Config object to save.
         """
-        with open(self.config_path, "w") as f:
-            json.dump(config.model_dump(), f, indent=2)
+        temporary = NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=self.config_path.parent,
+            prefix=f".{self.config_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        path = Path(temporary.name)
+        try:
+            with temporary as f:
+                json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            path.replace(self.config_path)
+        finally:
+            path.unlink(missing_ok=True)
 
     def reset_config(self) -> Config:
         """Reset configuration to defaults.
@@ -55,8 +71,7 @@ class ConfigManager:
         Returns:
             Fresh default Config object.
         """
-        if self.config_path.exists():
-            self.config_path.unlink()
+        self.config_path.unlink(missing_ok=True)
 
         return Config()
 
